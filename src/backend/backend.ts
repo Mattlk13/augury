@@ -1,11 +1,11 @@
 import { compare } from '../utils/patch';
 import { isAngular, isDebugMode } from './utils/app-check';
 
-import { MutableTree, Node, Path, instanceWithMetadata, serializePath } from '../tree';
+import { instanceWithMetadata, MutableTree, Node, Path, serializePath } from '../tree';
 
 import { onElementFound, onFindElement } from './utils/find-element';
 
-import { parseModulesFromRootElement, parseModulesFromRouter, NgModulesRegistry } from './utils/parse-modules';
+import { NgModulesRegistry, parseModulesFromRootElement, parseModulesFromRouter } from './utils/parse-modules';
 
 import { parseNgVersion } from './utils/parse-ng-version';
 
@@ -14,11 +14,11 @@ import { createTreeFromElements } from '../tree/mutable-tree-factory';
 import {
   ApplicationError,
   ApplicationErrorType,
+  browserDispatch,
+  browserSubscribe,
   Message,
   MessageFactory,
-  MessageType,
-  browserDispatch,
-  browserSubscribe
+  MessageType
 } from '../communication';
 
 import { parameterTypes } from '../tree/decorators';
@@ -26,13 +26,13 @@ import { parameterTypes } from '../tree/decorators';
 import { send } from './indirect-connection';
 
 import {
-  Route,
-  highlight,
   clear as clearHighlights,
-  parseRoutes,
   getNodeFromPartialPath,
   getNodeInstanceParent,
-  getNodeProvider
+  getNodeProvider,
+  highlight,
+  parseRoutes,
+  Route
 } from './utils';
 
 import { serialize } from '../utils';
@@ -42,8 +42,10 @@ import { SimpleOptions } from '../options';
 import { MessagePipeBackend } from 'feature-modules/.lib';
 import { highlighter } from 'feature-modules/highlighter/backend/index';
 import { ApplicationRef, NgModuleRef } from '@angular/core';
-import { timer, Subscription, Subject } from 'rxjs';
-import { takeWhile, filter } from 'rxjs/operators';
+import { Subject, Subscription, timer } from 'rxjs';
+import { filter, takeWhile } from 'rxjs/operators';
+
+import 'reflect-metadata';
 
 declare const ng;
 declare const getAllAngularRootElements: () => Element[];
@@ -113,6 +115,17 @@ const runAndHandleUncaughtExceptions = (fn: () => any) => {
 const sendNgVersionMessage = () => {
   const ngVersion = parseNgVersion();
   send(MessageFactory.ngVersion(ngVersion));
+};
+
+const logAuguryDetected = () => {
+  const ngVersion = parseNgVersion();
+  console.log(
+    `%c Augury %c Detected Angular %c v${ngVersion} %c`,
+    'background:#3e5975 ; padding: 1px; border-radius: 3px 0 0 3px;  color: #fff; font-size: 14px;',
+    'background:#DD0031 ; padding: 1px; color: #fff; font-size: 14px;',
+    'background:#C3002F ; padding: 1px; border-radius: 0px 3px 3px 0;  color: #fff; font-size: 14px;',
+    'background:transparent'
+  );
 };
 
 const sendNgModulesMessage = () => {
@@ -193,8 +206,8 @@ let isStableSubscription: Subscription;
 
 const collectRoots = () =>
   getAllAngularRootElements()
-    .map(r => ng.probe(r))
-    .filter(x => x !== null);
+    .map(root => ng.probe(root))
+    .filter(debugRoot => debugRoot !== null);
 
 const listenForSomeTimeAndMaybeResubscribe = (timeMs: number) => {
   timer(CHECK_AFTER_NG_MODULE_DESTROY_RATE_MS, CHECK_AFTER_NG_MODULE_DESTROY_RATE_MS)
@@ -206,6 +219,7 @@ const listenForSomeTimeAndMaybeResubscribe = (timeMs: number) => {
 
 const resubscribe = () => {
   runAndHandleUncaughtExceptions(() => {
+    logAuguryDetected();
     sendNgVersionMessage();
 
     messageBuffer.clear();
@@ -225,7 +239,7 @@ const resubscribe = () => {
               let sanity;
               // Adding sanity threshold to make sure
               // larger app's doesn't get flooded
-              const sanityThreshold = 0.5 * 1000; // 0.5 seconds
+              const sanityThreshold = 0.2 * 1000; // 0.2 seconds
               const appRef: ApplicationRef = parseModulesFromRootElement(roots[0], parsedModulesData);
               if (isStableSubscription) {
                 isStableSubscription.unsubscribe();
@@ -236,10 +250,12 @@ const resubscribe = () => {
                   filter(() => sanity === undefined || new Date().getTime() - sanity > sanityThreshold)
                 )
                 .subscribe(e => {
-                  sanity = new Date().getTime();
-                  updateComponentTree(collectRoots());
-                  updateRouterTree();
-                  send(MessageFactory.ping());
+                  setTimeout(() => {
+                    sanity = new Date().getTime();
+                    updateComponentTree(collectRoots());
+                    updateRouterTree();
+                    send(MessageFactory.ping());
+                  });
                 });
               ngModuleRef = (appRef as any)._injector;
               ngModuleRef.onDestroy(() => {
@@ -291,6 +307,10 @@ const messageHandler = (message: Message<any>) => {
           resubscribe();
         }
 
+        return true;
+
+      case MessageType.Refresh:
+        resubscribe();
         return true;
 
       case MessageType.SelectComponent:
